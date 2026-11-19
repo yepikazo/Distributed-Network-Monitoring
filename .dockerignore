@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.git/
+hasil/
+laporan/
+Dockerfile
+docker-compose.yml
+.env
+README.md
+RANCANGAN_TCP.md
