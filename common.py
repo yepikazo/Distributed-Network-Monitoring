@@ -2,8 +2,8 @@
 
 Berisi:
 - framing TCP length-prefixed JSON,
-- fungsi probe (TCP connect / ICMP),
-- pembaca daftar target dan generator target sintetis,
+- fungsi probe TCP connect,
+- generator target sintetis,
 - penulisan CSV.
 """
 
@@ -12,7 +12,6 @@ from __future__ import annotations
 import csv
 import json
 import os
-import platform
 import random
 import re
 import socket
@@ -34,7 +33,7 @@ PROTO_VERSION = 1
 DEFAULT_PROBE = {"kind": "tcp", "port": 80, "count": 3, "timeout": 0.8}
 
 # Antarmuka LAN yang dipakai untuk alamat master/worker. Bisa dioverride lewat
-# NETMON_IFACE (mis. wlan0 di Termux atau eth0 di container).
+# NETMON_IFACE (mis. wlan0 di Termux atau eth0 di VM).
 LAN_INTERFACE = os.environ.get("NETMON_IFACE", "wlp3s0")
 
 # Alamat master untuk mode "langsung jalan" tanpa argumen. Jika IP master
@@ -46,8 +45,8 @@ def interface_ip(interface: str | None = None) -> str:
     """Kembalikan IPv4 pada antarmuka LAN (default wlp3s0).
 
     Urutan: baca `ip -4 addr` untuk antarmuka yang diminta, lalu fallback ke
-    alamat keluar default (berguna di container/Termux yang tidak punya
-    perintah `ip`). String kosong berarti tidak ada alamat yang bisa dipakai.
+    alamat keluar default (berguna di Termux/VM yang tidak punya perintah `ip`).
+    String kosong berarti tidak ada alamat yang bisa dipakai.
     """
     iface = (interface or LAN_INTERFACE).strip()
     if iface:

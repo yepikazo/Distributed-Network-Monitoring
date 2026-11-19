@@ -27,8 +27,7 @@ Hasil pemindaian port pada perangkat pengembangan:
 - Hanya **Master** yang membuka port kontrol. Worker membuka health port agar
   dapat diprobe TCP; izinkan 9997/tcp di firewall tiap worker.
 
-Jaringan: `wlp3s0` = `10.199.101.109/24`, subnet `10.199.101.0/24`. `docker0`
-(172.17.0.1/16) diabaikan.
+Jaringan: `wlp3s0` = `10.199.101.109/24`, subnet `10.199.101.0/24`.
 
 ---
 
@@ -275,7 +274,6 @@ Setiap konfigurasi diulang 3×, laporkan rata-rata ± standar deviasi.
 | Beban terlalu kecil → speedup < 1 | Gunakan ≥ 5.000 target |
 | Semua target hidup → tidak ada imbalance | Campur IP blackhole |
 | Firewall master menolak 9998 | `sudo ufw allow 9998/tcp` atau matikan firewall lab |
-| Docker bridge mengacaukan deteksi IP | Bind eksplisit ke IP LAN |
 | ICMP butuh root | Default probe = TCP connect |
 | Worker mati saat menulis hasil | Kirim `RESULT` sekali per task, atomik |
 | Master jadi bottleneck | Agregasi O(1) per baris, tulis CSV di akhir |

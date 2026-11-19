@@ -39,7 +39,6 @@ class WorkerInfo:
     inbox: queue.Queue
     ip: str = ""
     health_port: int = 0
-    peer: str = ""
     state: str = "READY"  # READY | ASSIGNED
     last_hb: float = field(default_factory=time.time)
     inflight: str | None = None
@@ -47,9 +46,6 @@ class WorkerInfo:
     chunks_done: int = 0
     rows_done: int = 0
     busy_s: float = 0.0
-    load: object = None
-    cpu_pct: object = None
-    mem_pct: object = None
     connected_at: float = field(default_factory=time.time)
     alive: bool = True
 
@@ -65,7 +61,6 @@ class TaskRecord:
     started: float = 0.0
     deadline: float = 0.0
     finished: float = 0.0
-    priority: int = 1
 
 
 class Master:
@@ -76,7 +71,6 @@ class Master:
         self.ledger: dict[str, TaskRecord] = {}
         self.workers: dict[str, WorkerInfo] = {}
         self.worker_history: dict[str, WorkerInfo] = {}
-        self.seen_workers: set[str] = set()
         self.rows: list[dict] = []
         self.failures: list[dict] = []
         self.stop = threading.Event()
@@ -88,6 +82,7 @@ class Master:
         self.start_time = time.time()
         self.done_since: float | None = None
         self.server: socket.socket | None = None
+        self.bind_ip = str(getattr(args, "bind", "") or "")
         self.required_workers = max(0, int(getattr(args, "expected_workers", 0) or 0))
         self.effective_chunk = 0
         self.target_source_used = ""
@@ -118,7 +113,7 @@ class Master:
 
     def defers_targets(self) -> bool:
         """True jika target baru bisa disusun setelah worker terhubung."""
-        return not self.args.synth and self.args.target_source in ("workers", "both")
+        return not self.args.synth
 
     def _worker_targets(self) -> list:
         """Ambil IP worker yang hidup sebagai target monitoring.
@@ -132,16 +127,13 @@ class Master:
         for worker in sorted(workers, key=lambda w: (w.ip, w.health_port, w.worker_id)):
             if not worker.ip:
                 continue
-            if self.args.probe_kind == "tcp":
-                if not worker.health_port:
-                    ui.notify(
-                        "MASTER",
-                        f"{worker.worker_id} tidak membuka health port; dilewati",
-                    )
-                    continue
-                entry = f"{worker.ip}:{worker.health_port}"
-            else:
-                entry = worker.ip
+            if not worker.health_port:
+                ui.notify(
+                    "MASTER",
+                    f"{worker.worker_id} tidak membuka health port; dilewati",
+                )
+                continue
+            entry = f"{worker.ip}:{worker.health_port}"
             if entry not in seen:
                 seen.add(entry)
                 entries.append(entry)
@@ -155,27 +147,13 @@ class Master:
                 f"sintetis:{args.synth}",
             )
 
+        worker_targets = self._worker_targets()
         targets = []
-        if args.target_source in ("file", "both"):
-            path = args.targets or "targets.txt"
-            targets.extend(
-                common.load_targets(path, repeat=args.repeat, limit=args.limit)
-            )
-        if args.target_source in ("workers", "both"):
-            worker_targets = self._worker_targets()
-            repeat = max(1, args.repeat) if args.target_source == "workers" else 1
-            for _ in range(repeat):
-                targets.extend(worker_targets)
-        if args.limit and args.limit > 0 and args.target_source == "workers":
+        for _ in range(max(1, args.repeat)):
+            targets.extend(worker_targets)
+        if args.limit and args.limit > 0:
             targets = targets[: args.limit]
-
-        if args.target_source == "workers":
-            label = "ip-worker"
-        elif args.target_source == "both":
-            label = "file+ip-worker"
-        else:
-            label = f"file:{args.targets or 'targets.txt'}"
-        return targets, label
+        return targets, "ip-worker"
 
     def build_tasks(self) -> bool:
         args = self.args
@@ -183,7 +161,7 @@ class Master:
         if not targets:
             ui.notify(
                 "MASTER",
-                "tidak ada target: pastikan worker terhubung atau isi targets.txt",
+                "tidak ada target: pastikan worker terhubung atau pakai --synth N",
             )
             return False
 
@@ -195,14 +173,13 @@ class Master:
             chunk = max(1, math.ceil(len(targets) / expected))
         elif args.chunk and args.chunk > 0:
             chunk = max(1, args.chunk)
-        elif source == "ip-worker":
-            chunk = 1
-        else:
+        elif args.synth:
             chunk = 50
+        else:
+            chunk = 1
         self.effective_chunk = chunk
 
         probe = {
-            "kind": args.probe_kind,
             "port": args.probe_port,
             "count": args.count,
             "timeout": args.timeout,
@@ -262,6 +239,11 @@ class Master:
         server.listen(64)
         server.settimeout(0.5)
         self.server = server
+        self.bind_ip = bind_ip
+        print(
+            f"[master] MASTER device={socket.gethostname()} "
+            f"ip={bind_ip}:{self.args.port}"
+        )
         print(
             f"[master] mendengarkan TCP {bind_ip}:{self.args.port} "
             f"(harap buka port ini di firewall)"
@@ -417,19 +399,18 @@ class Master:
             inbox=queue.Queue(),
             ip=worker_ip,
             health_port=health_port,
-            peer=peer,
         )
         with self.lock:
             self.workers[worker_id] = worker
             self.worker_history[worker_id] = worker
-            self.seen_workers.add(worker_id)
 
         with self.lock:
             total = len(self.workers)
         expected = self.args.expected_workers
         ui.notify(
             "NODE+",
-            f"{worker_id} ({hostname}, {cores} core) IP {worker_ip} dari {peer} | "
+            f"{worker_id} device={hostname} ip={worker_ip} "
+            f"health={health_port or '-'} ({cores} core) dari {peer} | "
             f"total {total}/{expected or '?'}",
         )
         self._event(
@@ -511,9 +492,6 @@ class Master:
                 mtype = msg.get("type")
                 if mtype == "HEARTBEAT":
                     worker.last_hb = time.time()
-                    worker.load = msg.get("load")
-                    worker.cpu_pct = msg.get("cpu_pct")
-                    worker.mem_pct = msg.get("mem_pct")
                 elif mtype == "RESULT":
                     self._on_result(worker, msg)
                 elif mtype == "BYE":
@@ -682,7 +660,7 @@ class Master:
                 )
             else:
                 record.status = "QUEUED"
-                record.priority = 0  # dahulukan task yang pernah gagal/timeout
+                # prioritas 0: dahulukan task yang pernah gagal/timeout
                 self.tasks.put((0, next(self.seq), record.task_id))
                 print(
                     f"[master] task {record.task_id} dikembalikan ke antrean "
@@ -726,7 +704,6 @@ class Master:
                     )
                 else:
                     record.status = "QUEUED"
-                    record.priority = 0
                     self.tasks.put((0, next(self.seq), record.task_id))
                     print(
                         f"[master] task {record.task_id} dikembalikan ke antrean "
@@ -779,9 +756,9 @@ class Master:
             inflight = any(w.inflight for w in self.workers.values())
             required = self.required_workers
             enough = (
-                len(self.seen_workers) >= required
+                len(self.worker_history) >= required
                 if required > 0
-                else bool(self.seen_workers)
+                else bool(self.worker_history)
             )
             if self.total_tasks > 0 and complete >= self.total_tasks and not inflight and enough:
                 self.done_since = time.time()
@@ -804,15 +781,22 @@ class Master:
                 workers = sorted(self.workers.values(), key=lambda item: item.worker_id)
             expected = self.required_workers or self.args.expected_workers
             total = f"{len(workers)}/{expected}" if expected else str(len(workers))
+            master = (
+                f"master={socket.gethostname()}"
+                f"@{self.bind_ip or self.args.bind}:{self.args.port}"
+            )
             if not workers:
-                ui.notify("NODES", f"{total} aktif - menunggu node terhubung ...")
+                ui.notify(
+                    "NODES",
+                    f"{total} aktif | {master} | menunggu node terhubung ...",
+                )
                 continue
             items = [
-                f"{worker.worker_id}@{worker.ip or '?'}:"
-                f"{'sibuk' if worker.inflight else 'idle'}"
+                f"{worker.worker_id}@{worker.hostname}/"
+                f"{worker.ip or '?'}:{'sibuk' if worker.inflight else 'idle'}"
                 for worker in workers
             ]
-            ui.notify("NODES", f"{total} aktif | " + " ".join(items))
+            ui.notify("NODES", f"{total} aktif | {master} | " + " ".join(items))
 
     # ------------------------------------------------------------------
     # Penutupan & laporan
@@ -856,7 +840,7 @@ class Master:
                         "connected_s": round(time.time() - worker.connected_at, 3),
                     }
                 )
-            workers_seen = sorted(self.seen_workers)
+            workers_seen = sorted(self.worker_history)
             done = self.finished_tasks
             failed = self.failed_tasks
             total = self.total_tasks
@@ -875,7 +859,6 @@ class Master:
             "mode": self.args.mode,
             "bind": f"{self.args.bind}:{self.args.port}",
             "probe": {
-                "kind": self.args.probe_kind,
                 "port": self.args.probe_port,
                 "count": self.args.count,
                 "timeout": self.args.timeout,
@@ -930,6 +913,19 @@ class Master:
         print(f"  task          : {done} selesai, {failed} gagal dari {total}")
         print(f"  throughput    : {throughput:.2f} target/detik")
         print(f"  worker        : {len(workers_seen)} terdaftar")
+        print(
+            f"  master        : {socket.gethostname()} "
+            f"({self.bind_ip or self.args.bind}:{self.args.port})"
+        )
+        node_label = "  node terhubung:"
+        for stat in sorted(worker_stats, key=lambda item: item["worker_id"]):
+            print(
+                f"{node_label} {stat['worker_id']} ({stat['hostname']}) "
+                f"{stat['ip'] or '?'}:{stat['health_port'] or '-'}"
+            )
+            node_label = "                 "
+        if not worker_stats:
+            print(f"{node_label} -")
         if imbalance is not None:
             print(f"  imbalance     : {imbalance:.2f} (max/mean waktu sibuk)")
         print(f"  hasil         : {rows_path}")
@@ -948,17 +944,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--port", type=int, default=common.CONTROL_PORT)
     parser.add_argument(
-        "--targets",
-        default=None,
-        help="file daftar target (default: tidak dipakai; target = IP worker)",
+        "--synth",
+        type=int,
+        default=0,
+        help="buat N target sintetis (default: target = IP worker terhubung)",
     )
-    parser.add_argument(
-        "--target-source",
-        choices=["workers", "file", "both"],
-        default=None,
-        help="sumber target: ip worker terhubung, file, atau keduanya (auto)",
-    )
-    parser.add_argument("--synth", type=int, default=0, help="buat N target sintetis")
     parser.add_argument("--seed", type=int, default=70)
     parser.add_argument("--repeat", type=int, default=1, help="ulangi daftar target")
     parser.add_argument("--limit", type=int, default=0)
@@ -966,7 +956,7 @@ def parse_args(argv=None):
         "--chunk",
         type=int,
         default=0,
-        help="target per task (0=auto: 1 untuk IP worker, 50 untuk file/sintetis)",
+        help="target per task (0=auto: 1 untuk IP worker, 50 untuk sintetis)",
     )
     parser.add_argument(
         "--discovery-timeout",
@@ -976,7 +966,6 @@ def parse_args(argv=None):
     )
     parser.add_argument("--mode", choices=["dynamic", "static"], default="dynamic")
     parser.add_argument("--expected-workers", type=int, default=0)
-    parser.add_argument("--probe-kind", choices=["tcp", "icmp"], default="tcp")
     parser.add_argument("--probe-port", type=int, default=80)
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=0.8)
@@ -1010,48 +999,25 @@ def parse_args(argv=None):
         help="tulis event JSONL ke file ini (untuk analisis fault tolerance)",
     )
     parser.add_argument("--run-tag", default="dinamis")
-    args = parser.parse_args(argv)
-
-    if args.target_source is None:
-        args.target_source = "file" if args.targets else "workers"
-    if args.target_source in ("file", "both") and not args.targets:
-        args.targets = "targets.txt"
-    return args
+    return parser.parse_args(argv)
 
 
 def run_interactive(args):
     fields = [
-        ui.Field("mode", "Mode penjadwalan", args.mode, "choice", ("dynamic", "static")),
-        ui.Field("port", "Port TCP master", args.port, "int", minimum=1),
         ui.Field(
-            "target_source",
-            "Sumber target",
-            args.target_source,
-            "choice",
-            ("workers", "file", "both"),
-        ),
-        ui.Field("targets", "File target (file/both)", args.targets or ""),
-        ui.Field("synth", "Target sintetis (0=tidak)", args.synth, "int", minimum=0),
-        ui.Field("expected_workers", "Jumlah worker", args.expected_workers, "int", minimum=0),
-        ui.Field(
-            "discovery_timeout",
-            "Tunggu node (detik)",
-            args.discovery_timeout,
-            "float",
+            "synth",
+            "Target sintetis (0=worker)",
+            args.synth,
+            "int",
             minimum=0,
         ),
-        ui.Field("chunk", "Target/task (0=auto)", args.chunk, "int", minimum=0),
         ui.Field(
-            "fairness",
-            "Kebijakan fairness",
-            args.fairness,
-            "choice",
-            ("count", "idle", "off"),
+            "expected_workers",
+            "Jumlah worker",
+            args.expected_workers,
+            "int",
+            minimum=0,
         ),
-        ui.Field("probe_kind", "Jenis probe", args.probe_kind, "choice", ("tcp", "icmp")),
-        ui.Field("probe_port", "Port probe TCP", args.probe_port, "int", minimum=1),
-        ui.Field("count", "Probe per target", args.count, "int", minimum=1),
-        ui.Field("timeout", "Timeout (detik)", args.timeout, "float", minimum=0.05),
         ui.Field("run_tag", "Nama run", args.run_tag),
     ]
     values = ui.run_form(
@@ -1070,24 +1036,13 @@ def main(argv=None) -> int:
     if ui.should_prompt(args.interactive, raw_args):
         args = run_interactive(args)
 
-    if args.targets and args.target_source == "workers" and not args.synth:
-        ui.notify("MASTER", "--targets diabaikan karena target-source=workers")
-
-    if args.synth:
-        source = f"sintetis:{args.synth}"
-    elif args.target_source == "both":
-        source = f"file:{args.targets}+ip-worker"
-    elif args.target_source == "file":
-        source = f"file:{args.targets}"
-    else:
-        source = "ip-worker"
-
+    source = f"sintetis:{args.synth}" if args.synth else "ip-worker"
     ui.notify(
         "MASTER",
         f"mode={args.mode} port={args.port} target={source} "
         f"worker={args.expected_workers or '-'} chunk={args.chunk or 'auto'} "
         f"fairness={args.fairness} "
-        f"probe={args.probe_kind}:{args.probe_port}x{args.count} "
+        f"probe=tcp:{args.probe_port}x{args.count} "
         f"timeout={args.timeout}s tag={args.run_tag}",
     )
 

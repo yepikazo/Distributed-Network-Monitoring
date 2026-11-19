@@ -1,8 +1,8 @@
 """Komponen antarmuka terminal: form interaktif dan notifikasi.
 
 Form dipakai ketika program dijalankan tanpa argumen di terminal (TTY) atau
-dengan `--interactive`. Di Docker tanpa `-it`, stdin bukan TTY sehingga form
-otomatis dilewati dan nilai default/argumen tetap dipakai.
+dengan `--interactive`. Jika stdin bukan TTY (mis. pipe/redirect), form otomatis
+dilewati dan nilai default/argumen tetap dipakai.
 """
 
 from __future__ import annotations
