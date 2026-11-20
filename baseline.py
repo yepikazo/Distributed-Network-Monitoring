@@ -39,12 +39,8 @@ def run_local(targets, probe, cores):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Baseline monitoring jaringan")
-    parser.add_argument("--targets", default="targets.txt")
-    parser.add_argument("--synth", type=int, default=0)
+    parser.add_argument("--synth", type=int, default=0, help="buat N target sintetis")
     parser.add_argument("--seed", type=int, default=70)
-    parser.add_argument("--repeat", type=int, default=1)
-    parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--probe-kind", choices=["tcp", "icmp"], default="tcp")
     parser.add_argument("--probe-port", type=int, default=80)
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=0.8)
@@ -57,13 +53,12 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    if args.synth:
-        targets = common.synth_targets(args.synth, seed=args.seed)
-    else:
-        targets = common.load_targets(args.targets, repeat=args.repeat, limit=args.limit)
+    if not args.synth:
+        print("[baseline] harus diisi --synth N")
+        return 2
+    targets = common.synth_targets(args.synth, seed=args.seed)
 
     probe = {
-        "kind": args.probe_kind,
         "port": args.probe_port,
         "count": args.count,
         "timeout": args.timeout,
@@ -73,7 +68,7 @@ def main(argv=None) -> int:
 
     print(
         f"[baseline] mode={args.mode} target={len(targets)} "
-        f"probe={probe['kind']}:{probe['port']} count={probe['count']}"
+        f"probe=tcp:{probe['port']} count={probe['count']}"
     )
 
     started = time.perf_counter()

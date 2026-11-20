@@ -66,8 +66,6 @@ def common_probe_args(args):
         str(args.synth),
         "--seed",
         str(args.seed),
-        "--probe-kind",
-        args.probe_kind,
         "--probe-port",
         str(args.probe_port),
         "--count",
@@ -387,16 +385,11 @@ Panduan uji 10 node fisik (1 master + 9 worker)
      sudo ufw allow 9998/tcp
      (atau pastikan firewall lab mengizinkan TCP 9998)
 
-2) (Opsional) untuk target dari file, isi daftar IP yang boleh dipantau:
-     cp targets.txt targets.txt.bak
-     nano targets.txt          # IP lab + 192.0.2.x untuk timeout
-
 3) Sequential baseline (1 proses, target sama):
      python baseline.py --mode sequential --synth 500 --run-tag sequential
-     # atau: --targets targets.txt
 
 4) Demo monitoring node (target = IP 9 worker):
-     python master.py --target-source workers --expected-workers 9 --repeat 5 \\
+     python master.py --expected-workers 9 --repeat 5 \\
          --fairness count --run-tag dist_ipworker_k9 --out hasil
 
    Uji performa/skalabilitas (target sama untuk 1..9 node):
@@ -434,7 +427,6 @@ def parse_args(argv=None):
     local.add_argument("--workers", type=int, nargs="+", default=[1, 2, 4])
     local.add_argument("--synth", type=int, default=60)
     local.add_argument("--seed", type=int, default=70)
-    local.add_argument("--probe-kind", choices=["tcp", "icmp"], default="tcp")
     local.add_argument("--probe-port", type=int, default=80)
     local.add_argument("--count", type=int, default=1)
     local.add_argument("--timeout", type=float, default=0.3)

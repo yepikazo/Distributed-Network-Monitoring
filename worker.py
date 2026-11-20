@@ -23,12 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 import ui  # noqa: E402
 
-try:
-    import psutil  # opsional, untuk metrik CPU/memori
-except ImportError:  # pragma: no cover
-    psutil = None
-
-
 def probe_batch(payload):
     """Probe satu batch target. Dijalankan di proses anak (picklable)."""
     targets, probe = payload
@@ -282,20 +276,9 @@ class Worker:
     def _heartbeat(self, sock, lock, stop: threading.Event) -> None:
         interval = max(0.5, self.args.hb_interval)
         while not stop.wait(interval):
-            cpu = None
-            mem = None
-            if psutil is not None:
-                try:
-                    cpu = psutil.cpu_percent(interval=None)
-                    mem = psutil.virtual_memory().percent
-                except Exception:  # pragma: no cover
-                    cpu = mem = None
             payload = {
                 "type": "HEARTBEAT",
                 "worker_id": self.worker_id,
-                "load": self.active,
-                "cpu_pct": cpu,
-                "mem_pct": mem,
                 "ts": time.time(),
             }
             try:

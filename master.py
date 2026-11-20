@@ -87,6 +87,11 @@ class Master:
         self.effective_chunk = 0
         self.target_source_used = ""
         self.targets_built = False
+        self.runs_total = max(1, int(getattr(args, "runs", 1) or 1))
+        self.current_run = 1
+        self._base_run_tag = args.run_tag
+        self.run_complete = threading.Event()
+        self.total_failed_all_runs = 0
         self.events_path = Path(args.events) if getattr(args, "events", "") else None
         self.event_lock = threading.Lock()
         if self.events_path:
@@ -100,7 +105,7 @@ class Master:
     def _event(self, kind: str, **fields) -> None:
         if not self.events_path:
             return
-        payload = {"ts": round(time.time(), 4), "kind": kind}
+        payload = {"ts": round(time.time(), 4), "kind": kind, "run": self.current_run}
         payload.update(fields)
         line = json.dumps(payload, ensure_ascii=False)
         with self.event_lock:
@@ -258,6 +263,9 @@ class Master:
 
         try:
             while not self.stop.is_set():
+                if self.run_complete.is_set():
+                    self._handle_run_complete()
+                    continue
                 try:
                     conn, addr = server.accept()
                 except socket.timeout:
@@ -745,6 +753,63 @@ class Master:
         except OSError:
             pass
 
+    def _reset_run_state(self) -> None:
+        """Reset state per run tetapi jaga koneksi worker tetap hidup."""
+        with self.lock:
+            self.tasks = queue.PriorityQueue()
+            self.ledger = {}
+            self.rows = []
+            self.failures = []
+            self.total_tasks = 0
+            self.target_total = 0
+            self.finished_tasks = 0
+            self.failed_tasks = 0
+            self.done_since = None
+            self.targets_built = False
+            self.start_time = time.time()
+            for worker in self.workers.values():
+                worker.inflight = None
+                worker.state = "READY"
+                worker.deadline = 0.0
+                worker.chunks_done = 0
+                worker.rows_done = 0
+                worker.busy_s = 0.0
+        self.run_complete.clear()
+
+    def _handle_run_complete(self) -> None:
+        """Selesaikan satu run, tulis output, lalu siapkan run berikutnya."""
+        with self.lock:
+            if self.current_run >= self.runs_total:
+                # Run terakhir: jalani jalur selesai biasa (done_since -> stop).
+                self.done_since = time.time()
+                self.run_complete.clear()
+                return
+            run_index = self.current_run
+            self.args.run_tag = (
+                self._base_run_tag
+                if self.runs_total == 1
+                else f"{self._base_run_tag}_r{run_index:02d}"
+            )
+
+        self.finalize()
+        self.total_failed_all_runs += self.failed_tasks
+        ui.notify(
+            "MASTER",
+            f"run {run_index}/{self.runs_total} selesai; memulai run berikutnya ...",
+        )
+
+        self._reset_run_state()
+        with self.lock:
+            self.current_run += 1
+            self.args.run_tag = (
+                self._base_run_tag
+                if self.runs_total == 1
+                else f"{self._base_run_tag}_r{self.current_run:02d}"
+            )
+        ok = self.build_tasks()
+        if not ok:
+            self.stop.set()
+
     def _maybe_finish(self) -> bool:
         with self.lock:
             if self.done_since is not None:
@@ -761,6 +826,9 @@ class Master:
                 else bool(self.worker_history)
             )
             if self.total_tasks > 0 and complete >= self.total_tasks and not inflight and enough:
+                if self.current_run < self.runs_total:
+                    self.run_complete.set()
+                    return False
                 self.done_since = time.time()
         return False
 
@@ -999,6 +1067,12 @@ def parse_args(argv=None):
         help="tulis event JSONL ke file ini (untuk analisis fault tolerance)",
     )
     parser.add_argument("--run-tag", default="dinamis")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="jumlah kali pengujian diulang dengan worker yang sama (default 1)",
+    )
     return parser.parse_args(argv)
 
 
@@ -1037,13 +1111,14 @@ def main(argv=None) -> int:
         args = run_interactive(args)
 
     source = f"sintetis:{args.synth}" if args.synth else "ip-worker"
+    runs_info = f" runs={args.runs}" if args.runs and args.runs > 1 else ""
     ui.notify(
         "MASTER",
         f"mode={args.mode} port={args.port} target={source} "
         f"worker={args.expected_workers or '-'} chunk={args.chunk or 'auto'} "
         f"fairness={args.fairness} "
         f"probe=tcp:{args.probe_port}x{args.count} "
-        f"timeout={args.timeout}s tag={args.run_tag}",
+        f"timeout={args.timeout}s tag={args.run_tag}{runs_info}",
     )
 
     master = Master(args)
@@ -1051,7 +1126,8 @@ def main(argv=None) -> int:
         if not master.build_tasks():
             return 2
     master.serve()
-    return 0 if master.failed_tasks == 0 and master.targets_built else 2
+    all_failed = master.total_failed_all_runs + master.failed_tasks
+    return 0 if all_failed == 0 and master.targets_built else 2
 
 
 if __name__ == "__main__":

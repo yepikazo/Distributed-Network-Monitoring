@@ -31,36 +31,33 @@ koneksi. Seluruh komunikasi memakai **TCP** (tanpa UDP discovery).
 
 ```
 tema13/
-├── common.py      # framing TCP, probe TCP/ICMP, util data
+├── common.py      # framing TCP, probe TCP, util data
 ├── master.py      # server 9998, scheduler, ledger, agregasi
 ├── worker.py      # client, heartbeat, ProcessPoolExecutor
 ├── baseline.py    # sequential (T1) dan local multiprocessing
 ├── benchmark.py   # orkestrasi uji lokal + laporan
 ├── faulttest.py   # uji fault tolerance otomatis (kill worker + recovery time)
-├── targets.txt    # opsional: daftar IP untuk target-source=file
-├── TERMUX.md      # panduan menjalankan di Android/Termux
 ├── hasil/         # rows_*.csv, ringkasan_*.json
 └── laporan/       # tabel_hasil.md, grafik, log
 ```
 
 Tidak ada dependensi wajib (hanya pustaka standar Python 3.10+).
-`psutil` dan `matplotlib` opsional:
+`matplotlib` opsional (untuk grafik laporan):
 
 ```bash
-pip install psutil matplotlib
+pip install matplotlib
 ```
 
 ---
 
-## 2.1 Sumber target: IP worker atau file
+## 2.1 Sumber target: IP worker atau sintetis
 
-Master punya tiga mode sumber target:
+Master punya dua mode sumber target:
 
 | Mode | Arti | Kapan dipakai |
 | --- | --- | --- |
 | `workers` (default) | Target = IP LAN semua worker yang sedang terhubung | Uji terdistribusi: node saling memantau |
-| `file` | Target dibaca dari `targets.txt` | Memantau perangkat lain di lab |
-| `both` | Gabungan file + IP worker | Demo lengkap |
+| `sintetis` (`--synth N`) | Target buatan acak | Uji beban dan timeout lokal |
 
 ### Alamat & antarmuka LAN
 
@@ -75,13 +72,13 @@ Baik master maupun worker memakai IP antarmuka **wlp3s0** (bisa diganti lewat
   `10.199.101.109` (ubah dengan `NETMON_MASTER` atau `--master`). Tidak ada
   form otomatis di sisi worker.
 
-Dengan mode `workers`, **tidak perlu scan subnet dan tidak perlu mengisi
-`targets.txt`**. Worker yang aktif akan connect ke master, master mencatat
-`IP:health_port`-nya, lalu membagikan probe ke seluruh worker.
+Dengan mode `workers`, **tidak perlu scan subnet**. Worker yang aktif akan
+connect ke master, master mencatat `IP:health_port`-nya, lalu membagikan probe
+ke seluruh worker.
 
 ```bash
-# master (tanpa --targets)
-python3 master.py --target-source workers --expected-workers 9 \
+# master
+python3 master.py --expected-workers 9 \
     --repeat 3 --run-tag ip_worker --out hasil
 
 # worker: langsung jalan, memakai master default 10.199.101.109
@@ -94,11 +91,7 @@ Worker membuka **health port TCP 9997** (bisa diubah dengan `--health-port`,
 `0` = acak). Port ini hanya menerima koneksi lalu menutupnya, dipakai sebagai
 sasaran probe TCP. Jika 9997 sudah terpakai (mis. beberapa worker di satu
 komputer), worker otomatis memakai port acak dan melaporkannya ke master.
-`--probe-port` hanya dipakai untuk target file yang tidak menulis port sendiri;
-target worker selalu memakai health port masing-masing.
-
-Dengan `--probe-kind icmp`, target worker memakai IP saja (health port tidak
-dipakai), tetapi `ping` harus diizinkan di setiap worker.
+Target worker selalu memakai health port masing-masing.
 
 Catatan: task dibagikan ke worker yang sedang idle, jadi satu target belum
 tentu diprobe oleh semua node (bukan matriks penuh N×N). `--repeat R` membuat
@@ -109,8 +102,7 @@ pertama untuk mengumpulkan node yang menyusul. Untuk hasil pasti, tetap isi
 `--expected-workers` sesuai jumlah node.
 
 > Master memakai IP LAN yang dilaporkan worker (`wlp3s0`). Karena itu mode ini
-> cocok untuk node di LAN/lab yang saling terjangkau. Untuk host di balik NAT,
-> gunakan `--target-source file` dengan IP publik/port yang benar.
+> cocok untuk node di LAN/lab yang saling terjangkau.
 
 Kebijakan pembagian task (`--fairness`):
 
@@ -134,7 +126,7 @@ cd UAS/tema13
 python3 baseline.py --synth 60 --count 1 --timeout 0.3 --mode sequential
 
 # 2a) target = IP worker yang terhubung (default)
-python3 master.py --target-source workers --expected-workers 2 --repeat 3 \
+python3 master.py --expected-workers 2 --repeat 3 \
     --count 1 --timeout 0.3 --run-tag lokal_worker --out hasil
 
 # 2b) target sintetis (untuk uji beban/timeout)
@@ -175,9 +167,9 @@ python3 worker.py --interactive    # form opsional
 Form master:
 
 ```
-  [1] Sumber target  : workers
-  [2] Jumlah worker  : 0
-  [3] Nama run       : dinamis
+  [1] Target sintetis (0=worker) : 0
+  [2] Jumlah worker              : 0
+  [3] Nama run                   : dinamis
   [0] Mulai
 ```
 
@@ -236,7 +228,7 @@ sudo ufw allow 9998/tcp
 # sudo ufw allow from 10.199.101.0/24 to any port 9998 proto tcp
 
 # target = IP 9 worker yang terhubung, tiap node diprobe 5 kali
-python3 master.py --target-source workers --expected-workers 9 \
+python3 master.py --expected-workers 9 \
     --repeat 5 --count 1 --timeout 0.5 --discovery-timeout 30 \
     --mode dynamic --run-tag dist_ipworker_k9 --out hasil
 ```
@@ -259,53 +251,13 @@ Master menunggu sampai `--expected-workers` terpenuhi atau
 dilaporkan setiap worker. Jika hanya 7 dari 9 node datang, master tetap lanjut
 dengan 7 target (tidak menggantung).
 
-Alternatif memantau perangkat lain di lab (bukan node worker):
-
-```bash
-python3 master.py --target-source file --targets targets.txt \
-    --mode dynamic --chunk 50 --expected-workers 9 \
-    --run-tag dist_file_k9 --out hasil
-```
-
 Master otomatis keluar setelah semua task selesai (jeda `--grace` 2 detik),
 mengirim `BYE`, lalu menulis laporan.
 
 > Mode `workers` menunggu node maksimal `--discovery-timeout` detik. Setelah itu
 > master memakai node yang ada; `--expected-workers` juga memengaruhi syarat
-> selesai. Pada mode `file`/`sintetis`, master menunggu sampai
-> `--expected-workers` terpenuhi atau `--max-runtime` habis (0 = tanpa batas).
-
----
-
-## 4.1 Termux (Android)
-
-Android dapat dipakai sebagai worker tambahan (atau master skala kecil). Panduan
-lengkap ada di [`TERMUX.md`](TERMUX.md). Ringkasnya:
-
-```bash
-pkg install -y python git
-cd ~/tema13
-termux-wake-lock
-python worker.py --cores 2
-```
-
-Worker langsung memakai master default `10.199.101.109`. Di Android, antarmuka
-biasanya `wlan0`; worker otomatis fallback ke IP keluar jika `wlp3s0` tidak ada.
-Untuk memaksa: `NETMON_IFACE=wlan0 python worker.py --cores 2`.
-
-Jika perangkat membatasi `multiprocessing` (mis. `Errno 38`), worker otomatis
-beralih ke mode inline. Untuk memaksa:
-
-```bash
-python worker.py --master 10.199.101.109 --port 9998 --cores 1 --inline
-```
-
-Worker HP membuka health port **9997/tcp** agar bisa diprobe master. Jika
-jaringan memblokir port itu, node akan tampil `down`; gunakan
-`--health-port 0` (acak) atau jalankan master dengan `--target-source file`
-untuk target lain.
-
-Angka performa dari HP tidak dipakai untuk laporan; gunakan laptop/PC.
+> selesai. Pada mode sintetis, master menunggu sampai `--expected-workers`
+> terpenuhi atau `--max-runtime` habis (0 = tanpa batas).
 
 ---
 
@@ -313,9 +265,9 @@ Angka performa dari HP tidak dipakai untuk laporan; gunakan laptop/PC.
 
 | Skenario | Perintah / perlakuan |
 | -------- | -------------------- |
-| a. Sequential | `baseline.py --mode sequential --run-tag sequential` |
+| a. Sequential | `baseline.py --mode sequential --synth 500 --run-tag sequential` |
 | b. Local parallel | `baseline.py --mode local --cores N --run-tag local_par` |
-| c. Distributed | `master.py --target-source workers --expected-workers K --repeat N` + K worker |
+| c. Distributed | `master.py --expected-workers K --repeat N` + K worker |
 | d. Load balancing | `--fairness count` vs `idle`/`off`; `--mode static` vs `dynamic` |
 | e. Fault tolerance | `python3 faulttest.py --workers 3 --kill L1,L2` (otomatis) |
 | f. Scalability | ulangi (c) untuk K = 1, 2, 4, 6, 9 |
@@ -362,7 +314,7 @@ sekaligus, lalu kutip kolom `detection_s` dan `recovery_s` dari CSV.
 Master juga bisa menulis event sendiri tanpa `faulttest.py`:
 
 ```bash
-python3 master.py --target-source workers --events laporan/events.jsonl ...
+python3 master.py --events laporan/events.jsonl ...
 ```
 
 ---
@@ -417,8 +369,6 @@ tertutup); `port_open` menunjukkan apakah TCP handshake berhasil.
   chunk otomatis 1 agar setiap node terdistribusi.
 - **Kenapa `ProcessPoolExecutor`?** Memenuhi syarat multiprocessing; setiap
   worker memakai seluruh core-nya untuk satu task.
-- **ICMP** butuh hak akses root/CAP_NET_RAW di Linux. Default probe adalah TCP
-  connect agar portabel. Gunakan `--probe-kind icmp` bila izin tersedia.
 - **Target blackhole**: `192.0.2.0/24` (TEST-NET-1, RFC 5737) dipakai untuk
   memunculkan timeout deterministik pada uji lokal.
 

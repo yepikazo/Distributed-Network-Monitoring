@@ -30,8 +30,6 @@ HEALTH_PORT = 9997  # port kecil di worker agar bisa diprobe dengan TCP
 MAX_MSG_BYTES = 4 * 1024 * 1024
 PROTO_VERSION = 1
 
-DEFAULT_PROBE = {"kind": "tcp", "port": 80, "count": 3, "timeout": 0.8}
-
 # Antarmuka LAN yang dipakai untuk alamat master/worker. Bisa dioverride lewat
 # NETMON_IFACE (mis. wlan0 di Termux atau eth0 di VM).
 LAN_INTERFACE = os.environ.get("NETMON_IFACE", "wlp3s0")
@@ -243,78 +241,9 @@ def _probe_tcp_target(target: str, probe: dict) -> dict:
     }
 
 
-def _probe_icmp_target(target: str, probe: dict) -> dict:
-    ip, _ = parse_target(target)
-    count = max(1, int(probe.get("count", 3)))
-    timeout = float(probe.get("timeout", 0.8))
-    is_windows = platform.system().lower() == "windows"
-
-    if is_windows:
-        cmd = ["ping", "-n", str(count), "-w", str(int(timeout * 1000)), ip]
-    else:
-        cmd = [
-            "ping",
-            "-c",
-            str(count),
-            "-W",
-            str(max(1, int(round(timeout)))),
-            "-i",
-            "0.2",
-            ip,
-        ]
-
-    text = ""
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=count * timeout + 10,
-            check=False,
-        )
-        text = (result.stdout or "") + (result.stderr or "")
-    except (OSError, subprocess.SubprocessError):
-        text = ""
-
-    times = [float(x) for x in re.findall(r"time[=<]\s*([\d.]+)\s*ms", text)]
-    loss = None
-    match = re.search(r"(\d+(?:\.\d+)?)%\s*(?:packet\s+)?loss", text)
-    if match:
-        loss = float(match.group(1))
-
-    sent = count
-    if loss is not None:
-        received = round(sent * (1.0 - loss / 100.0))
-    else:
-        received = len(times)
-
-    if loss is None:
-        loss = (sent - received) / sent * 100.0 if sent else 0.0
-
-    return {
-        "ip": ip,
-        "status": "up" if received else "down",
-        "port_open": None,
-        "sent": sent,
-        "received": received,
-        "loss_pct": round(loss, 2),
-        "rtt_min": round(min(times), 3) if times else None,
-        "rtt_avg": round(mean(times), 3) if times else None,
-        "rtt_max": round(max(times), 3) if times else None,
-        "jitter": round(pstdev(times), 3) if len(times) > 1 else 0.0,
-        "probe": "icmp",
-        "ts": round(time.time(), 3),
-    }
-
-
 def probe_target(target: str, probe: dict) -> dict:
-    """Jalankan probe satu target sesuai konfigurasi (ip atau ip:port)."""
-    kind = (probe.get("kind") or "tcp").lower()
-    if kind == "tcp":
-        return _probe_tcp_target(target, probe)
-    if kind == "icmp":
-        return _probe_icmp_target(target, probe)
-    raise ValueError(f"jenis probe tidak dikenal: {kind}")
+    """Jalankan probe satu target (TCP connect) dan kembalikan baris hasil."""
+    return _probe_tcp_target(target, probe)
 
 
 # ---------------------------------------------------------------------------
@@ -336,29 +265,6 @@ def split_evenly(items, parts):
             out.append(items[index : index + take])
         index += take
     return out
-
-
-def load_targets(path: str, repeat: int = 1, limit: int = 0):
-    """Baca daftar IP dari file teks (satu per baris, # = komentar)."""
-    raw = []
-    file_path = Path(path)
-    if file_path.exists():
-        for line in file_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            raw.append(line)
-
-    if not raw:
-        raise SystemExit(f"tidak ada target di {path}")
-
-    expanded = []
-    for _ in range(max(1, repeat)):
-        expanded.extend(raw)
-
-    if limit and limit > 0:
-        expanded = expanded[:limit]
-    return expanded
 
 
 def synth_targets(count: int, reachable_ratio: float = 0.7, seed: int = 70):

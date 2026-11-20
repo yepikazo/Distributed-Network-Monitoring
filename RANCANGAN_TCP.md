@@ -84,7 +84,7 @@ Aturan implementasi:
 | ---- | ---- | --- |
 | `HELLO` | W → M | `worker_id`, `hostname`, `cores`, `health_port`, `lan_ip`, `version` |
 | `WELCOME` | M → W | `session_id`, `heartbeat_ms`, `task_timeout_ms`, `chunk_size` |
-| `HEARTBEAT` | W → M | `load` (proses aktif), `cpu_pct`, `mem_pct` |
+| `HEARTBEAT` | W → M | `worker_id`, `ts` |
 | `TASK` | M → W | `task_id`, `targets[]`, `probe`, `attempt` |
 | `RESULT` | M → W | `task_id`, `rows[]`, `duration_ms`, `errors` |
 | `DRAIN` | M → W | minta worker berhenti mengambil task baru |
@@ -201,8 +201,7 @@ di worker lain.
    `HELLO` berisi IP LAN dan health port.
 3. Master membalas `WELCOME`, mencatat kapasitas core tiap worker.
 4. Setelah node yang dibutuhkan terkumpul (atau `discovery-timeout` habis),
-   master menyusun target dari `IP:health_port` setiap worker; jika memakai
-   `--target-source file`, target dibaca dari `targets.txt`.
+   master menyusun target dari `IP:health_port` setiap worker.
 5. Setiap worker `READY` menerima `TASK`; worker memecah target ke proses anak,
    menjalankan probe, mengirim `RESULT`.
 6. Master menyimpan baris hasil, mengirim `TASK` berikutnya.
@@ -217,21 +216,14 @@ Sumber target **default: IP worker yang terhubung**.
 
 - Worker mengirim `lan_ip` dan `health_port` di `HELLO`; master memakai
   `lan_ip` (wlp3s0) sebagai alamat target, fallback ke IP peer TCP.
-- Target probe menjadi `ip:health_port` untuk TCP, atau `ip` untuk ICMP.
+- Target probe menjadi `ip:health_port` untuk TCP.
 - `--repeat` menggandakan jumlah sampel; `--count` mengatur probe per target.
 - Tidak ada scan subnet: node yang aktif mendaftar lewat koneksi TCP.
 - Task dibagikan ke worker idle; satu target belum tentu diprobe semua node
   (bukan matriks penuh N×N). Kolom `worker` di CSV mencatat pelaksana probe.
 
-`targets.txt` dipakai hanya untuk `--target-source file` atau `both`:
-
-- IP host lab (`10.199.101.x`) — reachable, RTT kecil.
-- IP *blackhole* (`192.0.2.x`, TEST-NET-1) — unreachable, memicu timeout.
-- Port uji: 22/80/443 (bervariasi), 9999 (pasti tertutup).
-
-Campuran target hidup dan blackhole penting untuk membuktikan load balancing
-pada mode file; pada mode IP worker, variasi beban muncul dari perbedaan
-latency/CPU antar node.
+Campuran target hidup dan blackhole penting untuk membuktikan load balancing;
+variasi beban muncul dari perbedaan latency antar node.
 
 ---
 
@@ -243,7 +235,6 @@ UAS/tema13/
 ├── master.py       # server 9998, scheduler, ledger, agregasi
 ├── worker.py       # client, heartbeat, ProcessPoolExecutor
 ├── baseline.py     # sequential (T1)
-├── targets.txt     # opsional (target-source=file)
 ├── benchmark.py    # matriks uji → CSV
 ├── ui.py           # form interaktif + notifikasi
 ├── hasil/
@@ -274,7 +265,6 @@ Setiap konfigurasi diulang 3×, laporkan rata-rata ± standar deviasi.
 | Beban terlalu kecil → speedup < 1 | Gunakan ≥ 5.000 target |
 | Semua target hidup → tidak ada imbalance | Campur IP blackhole |
 | Firewall master menolak 9998 | `sudo ufw allow 9998/tcp` atau matikan firewall lab |
-| ICMP butuh root | Default probe = TCP connect |
 | Worker mati saat menulis hasil | Kirim `RESULT` sekali per task, atomik |
 | Master jadi bottleneck | Agregasi O(1) per baris, tulis CSV di akhir |
 

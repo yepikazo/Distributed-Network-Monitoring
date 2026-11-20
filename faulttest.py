@@ -215,7 +215,6 @@ def parse_args(argv=None):
     )
     parser.add_argument("--synth", type=int, default=200)
     parser.add_argument("--seed", type=int, default=70)
-    parser.add_argument("--probe-kind", choices=["tcp", "icmp"], default="tcp")
     parser.add_argument("--probe-port", type=int, default=80)
     parser.add_argument("--count", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=0.5)
@@ -255,8 +254,6 @@ def main(argv=None) -> int:
         str(args.synth),
         "--seed",
         str(args.seed),
-        "--probe-kind",
-        args.probe_kind,
         "--probe-port",
         str(args.probe_port),
         "--count",
